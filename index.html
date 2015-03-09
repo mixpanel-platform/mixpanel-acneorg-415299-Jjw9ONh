@@ -4,11 +4,93 @@
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/css/reset.css">
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.css">
     <script src="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.js"></script>
+    <style type="text/css">
+      .eventSelect {
+        margin-bottom: 15px;
+      }
+    </style>
   </head>
   <body class="mixpanel-platform-body">
+    <div class="eventSelect"></div>
+    <div id="chart"></div>
     <script>
+      var initializedAt = moment();
+      var SESSION_ACTIVITY_LIMIT_MINUTES = 5; 
+      var QUERY_INTERVAL_SECONDS = 3;
+      var MAX_VALUES = 15
+      
+      var startTime = moment().unix();
+      var activeUsers = {};
+      var chart = new Highcharts.Chart({
+          chart: {
+              renderTo: 'chart',
+              type: 'area'
+          },
+          title: {
+            text: ''
+          },
+          xAxis: {
+              type: 'category'
+          },
+           yAxis: {
+              title: {
+                  text: 'Active users'
+              },
+          },
+          tooltip: {
+              pointFormat: '{point.y:,.0f} active users'
+          },
+          series: [{name: 'Active users', data: []}]
+      });
+      
+      var getActiveUsers = function() { 
+        MP.api.query("/api/2.0/live", {start_time: startTime, search: $(".eventSelect").val() || ""}).done(function(resp) { 
+        
+          var usersInBatch = _.reduce(resp, function(results, event) {
+            eventTimestamp = parseInt(event.$ts);
+            startTime = Math.max(startTime, eventTimestamp)
+            var distinctId = event.properties.distinct_id;
+            if (distinctId && (!results[distinctId] || results[distinctId] < eventTimestamp)) {
+              results[event.properties.distinct_id] = eventTimestamp;
+            }
+            return results
+          }, {});
+          
+          activeUsers = _.extend(activeUsers, usersInBatch);
+          _.each(activeUsers, function(lastActivity, distinctId) {
+            if (lastActivity < startTime - SESSION_ACTIVITY_LIMIT_MINUTES * 60 * 1000) {
+              console.log('deleting stale user session ' + distinctId + '. Last activity was ' + parseInt((startTime - lastActivity) / 1000) + ' seconds ago');
+              delete activeUsers[distinctId];
+            }
+          });
+          
+          chart.series[0].addPoint({name: moment().format('HH:mm:ss'), y: _.keys(activeUsers).length}, true, chart.series[0].data.length > MAX_VALUES);
+        });
+        
+        var eventLabel = "performing any event";
+        if ($('.eventSelect').val()) {
+          eventLabel = "performing \"" + $('.eventSelect').val() + "\"";
+        }
+        var secondsOnPage = parseInt(Math.max(1, (moment() - initializedAt) / 1000));
+        var timeLabel = ""
+        if (secondsOnPage < 60) {
+          timeLabel = secondsOnPage + " seconds";
+        } else if (secondsOnPage < 120) {
+          timeLabel = "1 minute";
+        } else {
+          timeLabel = Math.min(parseInt(secondsOnPage / 60), 5) + " minutes";
+        }
+        chart.setTitle({text: _.sprintf("Users %s in the last %s", eventLabel, timeLabel)});
+      }
+
       MP.api.ready(function() {
-        // Run queries and display results here
+        $('.eventSelect').MPEventSelect().on('change', function() {
+          chart.series[0].setData([]);
+          activeUsers = {};
+          initializedAt = moment();
+        });
+        getActiveUsers();
+        setInterval(getActiveUsers, QUERY_INTERVAL_SECONDS * 1000);
       });
     </script>
   </body>
